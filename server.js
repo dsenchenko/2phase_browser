@@ -136,7 +136,7 @@ class Unit {
         this.health = 100;
         this.maxHealth = 100;
         this.damage = 25;
-        this.range = 2; // grid cells
+        this.shootRange = 5; // grid cells
         this.visionRange = GAME_CONFIG.VISION_RANGE;
         this.selected = false;
         
@@ -234,11 +234,17 @@ class Unit {
         return { x: this.gridX, y: this.gridY };
     }
 
-    planMove(targetGridX, targetGridY, obstacles) {
+    planMove(targetGridX, targetGridY, obstacles, game) {
+        // Add other units' positions as obstacles
+        const occupied = new Set([...obstacles]);
+        game.units.forEach(u => {
+            if (u.id !== this.id && u.health > 0) {
+                occupied.add(`${u.gridX},${u.gridY}`);
+            }
+        });
         const start = this.getLastCommandEndPosition();
         const end = { x: targetGridX, y: targetGridY };
-        
-        const path = findPath(start, end, obstacles);
+        const path = findPath(start, end, occupied);
         if (path.length > 1) {
             const command = this.addCommand('move', { path: path });
             return command !== null; // Return success/failure
@@ -246,7 +252,11 @@ class Unit {
         return false;
     }
 
-    planAttack(targetId) {
+    planAttack(targetId, game) {
+        const target = game.getUnitById(targetId);
+        if (!target || !this.canAttack(target)) {
+            return false;
+        }
         const command = this.addCommand('attack', { targetId: targetId });
         return command !== null; // Return success/failure
     }
@@ -381,7 +391,7 @@ class Unit {
             { x: this.gridX, y: this.gridY },
             { x: target.gridX, y: target.gridY }
         );
-        return distance <= this.range && target.playerId !== this.playerId;
+        return distance <= this.shootRange && target.playerId !== this.playerId;
     }
 
     canSee(target) {
@@ -564,9 +574,32 @@ class Game {
                 }
             }
 
+            // In startExecutionPhase execution loop, after updating all units, check for collisions
+            // Build a map of grid positions to units
+            const positionMap = new Map();
+            this.units.forEach(unit => {
+                if (unit.health > 0) {
+                    const key = `${unit.gridX},${unit.gridY}`;
+                    if (!positionMap.has(key)) positionMap.set(key, []);
+                    positionMap.get(key).push(unit);
+                }
+            });
+            // For each cell with more than one unit, deal collision damage
+            const collisions = [];
+            positionMap.forEach(unitsInCell => {
+                if (unitsInCell.length > 1) {
+                    unitsInCell.forEach(unit => {
+                        const collisionDamage = Math.floor(unit.maxHealth * 0.3);
+                        unit.takeDamage(collisionDamage);
+                        collisions.push({ unitId: unit.id, amount: collisionDamage });
+                    });
+                }
+            });
+            // Pass collisions to broadcastGameState
             this.broadcastGameState({ 
                 executionTime: currentTime,
-                maxExecutionTime: GAME_CONFIG.TIMELINE_DURATION 
+                maxExecutionTime: GAME_CONFIG.TIMELINE_DURATION,
+                collisions
             });
         }, executionInterval);
     }
@@ -715,7 +748,7 @@ io.on('connection', (socket) => {
             const unit = game.getUnitById(data.unitId);
             if (unit && unit.playerId === playerId) {
                 const targetGrid = worldToGrid(data.x, data.y);
-                const success = unit.planMove(targetGrid.x, targetGrid.y, game.obstacles);
+                const success = unit.planMove(targetGrid.x, targetGrid.y, game.obstacles, game);
                 
                 if (success) {
                     game.broadcastGameState();
@@ -739,15 +772,23 @@ io.on('connection', (socket) => {
         if (game && game.phase === 'planning') {
             const unit = game.getUnitById(data.unitId);
             if (unit && unit.playerId === playerId) {
-                const success = unit.planAttack(data.targetId);
+                const success = unit.planAttack(data.targetId, game);
                 
                 if (success) {
                     game.broadcastGameState();
                 } else {
-                    socket.emit('commandError', { 
-                        message: 'Cannot add attack: Timeline limit exceeded',
-                        type: 'timeline_full'
-                    });
+                    const target = game.getUnitById(data.targetId);
+                    if (!target || !unit.canAttack(target)) {
+                        socket.emit('commandError', {
+                            message: 'Target is out of range for attack',
+                            type: 'attack_out_of_range'
+                        });
+                    } else {
+                        socket.emit('commandError', { 
+                            message: 'Cannot add attack: Timeline limit exceeded',
+                            type: 'timeline_full'
+                        });
+                    }
                 }
             }
         }
