@@ -14,15 +14,19 @@ app.use(express.static('public'));
 // Game state
 const games = new Map();
 const players = new Map();
+const matchmakingQueue = [];
+let matchmakingTimer = null;
 
 // Game constants
 const GAME_CONFIG = {
     PLANNING_TIME: 60000, // 1 minute in milliseconds
-    MAP_WIDTH: 800,
-    MAP_HEIGHT: 600,
+    MAP_WIDTH: 1200, // Updated for larger canvas
+    MAP_HEIGHT: 700,  // Updated for larger canvas
     GRID_SIZE: 40,
     UNIT_SIZE: 20,
-    MAX_PLAYERS: 2,
+    MIN_PLAYERS: 2,
+    MAX_PLAYERS: 4,
+    MATCHMAKING_WAIT_TIME: 10000, // 10 seconds
     VISION_RANGE: 4, // cells
     TIMELINE_DURATION: 20, // seconds for execution phase
     TIME_PER_MOVE: 1, // seconds per grid cell movement
@@ -110,6 +114,131 @@ function findPath(start, end, obstacles) {
     }
     
     return []; // No path found
+}
+
+// Matchmaking system
+function addToMatchmakingQueue(playerId, username, socketId) {
+    const player = {
+        id: playerId,
+        username: username,
+        socketId: socketId,
+        joinTime: Date.now()
+    };
+    
+    matchmakingQueue.push(player);
+    console.log(`Player ${username} (${playerId}) joined matchmaking queue. Queue size: ${matchmakingQueue.length}`);
+    
+    // Start matchmaking timer if this is the first player
+    if (matchmakingQueue.length === 1) {
+        startMatchmakingTimer();
+    }
+    
+    // Broadcast queue update to all waiting players
+    broadcastMatchmakingUpdate();
+    
+    // If we have max players, start immediately
+    if (matchmakingQueue.length >= GAME_CONFIG.MAX_PLAYERS) {
+        startGameFromQueue();
+    }
+}
+
+function removeFromMatchmakingQueue(socketId) {
+    const index = matchmakingQueue.findIndex(p => p.socketId === socketId);
+    if (index !== -1) {
+        const player = matchmakingQueue.splice(index, 1)[0];
+        console.log(`Player ${player.username} left matchmaking queue`);
+        
+        // If queue is empty, clear timer
+        if (matchmakingQueue.length === 0 && matchmakingTimer) {
+            clearInterval(matchmakingTimer);
+            matchmakingTimer = null;
+        } else {
+            broadcastMatchmakingUpdate();
+        }
+    }
+}
+
+function startMatchmakingTimer() {
+    let timeRemaining = GAME_CONFIG.MATCHMAKING_WAIT_TIME / 1000; // Convert to seconds
+    
+    matchmakingTimer = setInterval(() => {
+        timeRemaining--;
+        broadcastMatchmakingUpdate(timeRemaining);
+        
+        if (timeRemaining <= 0) {
+            clearInterval(matchmakingTimer);
+            matchmakingTimer = null;
+            
+            // Start game if we have at least minimum players
+            if (matchmakingQueue.length >= GAME_CONFIG.MIN_PLAYERS) {
+                startGameFromQueue();
+            } else {
+                // Reset timer if we still have players but not enough
+                if (matchmakingQueue.length > 0) {
+                    startMatchmakingTimer();
+                }
+            }
+        }
+    }, 1000);
+}
+
+function broadcastMatchmakingUpdate(timeRemaining = null) {
+    if (matchmakingQueue.length === 0) return;
+    
+    const updateData = {
+        players: matchmakingQueue.map(p => ({ id: p.id, username: p.username })),
+        timeRemaining: timeRemaining
+    };
+    
+    matchmakingQueue.forEach(player => {
+        io.to(player.socketId).emit('matchmakingUpdate', updateData);
+    });
+}
+
+function startGameFromQueue() {
+    if (matchmakingQueue.length < GAME_CONFIG.MIN_PLAYERS) return;
+    
+    const gameId = uuidv4();
+    const game = new Game(gameId);
+    games.set(gameId, game);
+    
+    // Add all queued players to the game
+    const playersToAdd = matchmakingQueue.splice(0, GAME_CONFIG.MAX_PLAYERS);
+    
+    playersToAdd.forEach(player => {
+        const socket = io.sockets.sockets.get(player.socketId);
+        if (socket) {
+            players.set(player.socketId, player.id);
+            game.addPlayer(player.id, player.socketId, player.username);
+            socket.join(gameId);
+            socket.emit('joined', { 
+                playerId: player.id, 
+                gameId: gameId,
+                playerColor: game.players.find(p => p.id === player.id).color
+            });
+        }
+    });
+    
+    console.log(`Game ${gameId} started with ${playersToAdd.length} players`);
+    
+    // Notify all players that the game has started
+    io.to(gameId).emit('gameStarted', { 
+        playerCount: playersToAdd.length,
+        gameId: gameId 
+    });
+    
+    game.broadcastGameState();
+    
+    // Clear timer if it's still running
+    if (matchmakingTimer) {
+        clearInterval(matchmakingTimer);
+        matchmakingTimer = null;
+    }
+    
+    // If there are still players in queue, restart matchmaking
+    if (matchmakingQueue.length > 0) {
+        startMatchmakingTimer();
+    }
 }
 
 class Command {
@@ -531,42 +660,72 @@ class Game {
     generateObstacles() {
         const gridWidth = Math.ceil(GAME_CONFIG.MAP_WIDTH / GAME_CONFIG.GRID_SIZE);
         const gridHeight = Math.ceil(GAME_CONFIG.MAP_HEIGHT / GAME_CONFIG.GRID_SIZE);
+        const centerY = Math.floor(gridHeight / 2);
+        const centerX = Math.floor(gridWidth / 2);
+        
+        // Define all possible spawn areas to avoid
+        const spawnAreas = [
+            // 2-player spawn areas
+            { x: 1, y: centerY, radius: 2 },              // Left side
+            { x: gridWidth - 2, y: centerY, radius: 2 },  // Right side
+            // 3-4 player additional spawn areas
+            { x: centerX, y: 1, radius: 2 },              // Top side
+            { x: centerX, y: gridHeight - 2, radius: 2 }  // Bottom side
+        ];
         
         // Generate random obstacles (about 15% of the map)
         const obstacleCount = Math.floor(gridWidth * gridHeight * 0.15);
         
         for (let i = 0; i < obstacleCount; i++) {
             let x, y;
+            let attempts = 0;
             do {
                 x = Math.floor(Math.random() * gridWidth);
                 y = Math.floor(Math.random() * gridHeight);
+                attempts++;
+                
+                // Avoid infinite loop
+                if (attempts > 1000) break;
+                
             } while (
                 this.obstacles.has(`${x},${y}`) ||
-                (x < 3 && y >= gridHeight / 2 - 2 && y <= gridHeight / 2 + 2) || // Player 1 spawn area
-                (x >= gridWidth - 3 && y >= gridHeight / 2 - 2 && y <= gridHeight / 2 + 2) // Player 2 spawn area
+                spawnAreas.some(area => {
+                    const distance = Math.abs(x - area.x) + Math.abs(y - area.y);
+                    return distance <= area.radius;
+                })
             );
             
-            this.obstacles.add(`${x},${y}`);
+            if (attempts <= 1000) {
+                this.obstacles.add(`${x},${y}`);
+            }
         }
     }
 
-    addPlayer(playerId, socketId) {
+    addPlayer(playerId, socketId, username) {
         if (this.players.length >= GAME_CONFIG.MAX_PLAYERS) {
             return false;
         }
 
+        // Define colors for up to 4 players
+        const playerColors = ['#4CAF50', '#F44336', '#2196F3', '#FF9800']; // Green, Red, Blue, Orange
+
         const player = {
             id: playerId,
             socketId: socketId,
+            username: username,
             ready: false,
             planningReady: false,
-            color: this.players.length === 0 ? '#4CAF50' : '#F44336'
+            color: playerColors[this.players.length]
         };
 
         this.players.push(player);
         this.spawnUnitsForPlayer(playerId);
 
-        if (this.players.length === GAME_CONFIG.MAX_PLAYERS) {
+        // Start planning when we have at least minimum players and all current players are ready
+        // Or when we reach max players
+        if (this.players.length >= GAME_CONFIG.MIN_PLAYERS) {
+            // For now, start immediately when we have enough players
+            // Could add a ready system here later
             this.startPlanningPhase();
         }
 
@@ -578,15 +737,49 @@ class Game {
         const gridWidth = Math.ceil(GAME_CONFIG.MAP_WIDTH / GAME_CONFIG.GRID_SIZE);
         const gridHeight = Math.ceil(GAME_CONFIG.MAP_HEIGHT / GAME_CONFIG.GRID_SIZE);
         
-        const startGridX = playerIndex === 0 ? 1 : gridWidth - 2;
-        const centerGridY = Math.floor(gridHeight / 2);
+        // Define spawn positions for up to 4 players
+        let spawnPositions;
+        const centerY = Math.floor(gridHeight / 2);
+        const centerX = Math.floor(gridWidth / 2);
+        
+        if (this.players.length <= 2) {
+            // 2 players: left and right sides
+            spawnPositions = [
+                { x: 1, y: centerY },      // Player 1: left side
+                { x: gridWidth - 2, y: centerY }  // Player 2: right side
+            ];
+        } else if (this.players.length <= 3) {
+            // 3 players: left, right, top
+            spawnPositions = [
+                { x: 1, y: centerY },              // Player 1: left side
+                { x: gridWidth - 2, y: centerY },  // Player 2: right side
+                { x: centerX, y: 1 }               // Player 3: top side
+            ];
+        } else {
+            // 4 players: all four corners/sides
+            spawnPositions = [
+                { x: 1, y: centerY },              // Player 1: left side
+                { x: gridWidth - 2, y: centerY },  // Player 2: right side
+                { x: centerX, y: 1 },              // Player 3: top side
+                { x: centerX, y: gridHeight - 2 }  // Player 4: bottom side
+            ];
+        }
 
-        // Spawn 3 units for each player
+        const spawnPos = spawnPositions[playerIndex];
+
+        // Spawn 3 units for each player in a small formation
+        const unitOffsets = [
+            { x: 0, y: -1 },  // Unit above
+            { x: 0, y: 0 },   // Unit center
+            { x: 0, y: 1 }    // Unit below
+        ];
+
         for (let i = 0; i < 3; i++) {
+            const offset = unitOffsets[i];
             const unit = new Unit(
                 uuidv4(),
-                startGridX,
-                centerGridY + (i - 1),
+                spawnPos.x + offset.x,
+                spawnPos.y + offset.y,
                 playerId
             );
             this.units.push(unit);
@@ -810,30 +1003,10 @@ io.on('connection', (socket) => {
 
     socket.on('joinGame', (data) => {
         const playerId = data.playerId || uuidv4();
-        players.set(socket.id, playerId);
-
-        // Find or create a game
-        let game = Array.from(games.values()).find(g => 
-            g.players.length < GAME_CONFIG.MAX_PLAYERS && g.phase === 'waiting'
-        );
-
-        if (!game) {
-            const gameId = uuidv4();
-            game = new Game(gameId);
-            games.set(gameId, game);
-        }
-
-        if (game.addPlayer(playerId, socket.id)) {
-            socket.join(game.id);
-            socket.emit('joined', { 
-                playerId, 
-                gameId: game.id,
-                playerColor: game.players.find(p => p.id === playerId).color
-            });
-            game.broadcastGameState();
-        } else {
-            socket.emit('error', { message: 'Game is full' });
-        }
+        const username = data.username || 'Anonymous';
+        
+        // Add player to matchmaking queue
+        addToMatchmakingQueue(playerId, username, socket.id);
     });
 
     socket.on('planMove', (data) => {
@@ -951,6 +1124,9 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => {
         console.log('Player disconnected:', socket.id);
         const playerId = players.get(socket.id);
+        
+        // Remove from matchmaking queue if they were waiting
+        removeFromMatchmakingQueue(socket.id);
         
         if (playerId) {
             const game = Array.from(games.values()).find(g => 
