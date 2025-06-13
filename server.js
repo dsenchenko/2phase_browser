@@ -150,6 +150,10 @@ class Unit {
         this.moveStartGrid = null;
         this.moveTargetGrid = null;
         this.moveProgress = 0;
+        
+        // Sector watching state
+        this.isWatching = false;
+        this.watchData = null;
     }
 
     addCommand(type, data) {
@@ -252,18 +256,22 @@ class Unit {
         return false;
     }
 
-    planAttack(targetId, game) {
-        const target = game.getUnitById(targetId);
-        if (!target || !this.canAttack(target)) {
-            return false;
-        }
-        const command = this.addCommand('attack', { targetId: targetId });
-        return command !== null; // Return success/failure
-    }
-
     planWait(duration) {
         const command = this.addCommand('wait', { duration: duration });
         return command !== null; // Return success/failure
+    }
+
+    planWatchSector(gridX, gridY, direction, angle, duration) {
+        console.log(`Planning watchSector: gridX=${gridX}, gridY=${gridY}, direction=${direction}, duration=${duration}`);
+        const command = this.addCommand('watchSector', { 
+            gridX, 
+            gridY, 
+            direction, // angle in radians
+            angle,     // cone width in radians
+            duration   // how long to watch
+        });
+        console.log(`WatchSector command added: ${command !== null}, total commands: ${this.commandChain.length}`);
+        return command !== null;
     }
 
     updateExecution(game, currentTime, deltaTime) {
@@ -274,6 +282,7 @@ class Unit {
             );
             
             if (nextCommand) {
+                console.log(`Unit ${this.id.substring(0, 8)} starting command: ${nextCommand.type} at time ${currentTime}`);
                 this.currentCommand = nextCommand;
                 this.commandStartTime = currentTime;
                 this.startCommand(nextCommand, game);
@@ -286,6 +295,7 @@ class Unit {
             
             if (commandProgress >= 1.0) {
                 // Command finished
+                console.log(`Unit ${this.id.substring(0, 8)} finishing command: ${this.currentCommand.type}`);
                 this.finishCommand(this.currentCommand, game);
                 this.currentCommand.executed = true;
                 this.currentCommand = null;
@@ -319,8 +329,14 @@ class Unit {
                     }
                 }
                 break;
-            case 'attack':
-                // Attack starts immediately but takes time to complete
+            case 'watchSector':
+                // Start watching the sector - move to sector position
+                this.isWatching = true;
+                this.watchData = command.data;
+                this.isMoving = true;
+                this.moveStartGrid = { x: this.gridX, y: this.gridY };
+                this.moveTargetGrid = { x: command.data.gridX, y: command.data.gridY };
+                this.moveProgress = 0;
                 break;
             case 'wait':
                 // Nothing to start for wait
@@ -358,6 +374,31 @@ class Unit {
                     }
                 }
                 break;
+            case 'watchSector':
+                // Move to sector position and watch
+                if (this.isMoving) {
+                    // Smooth movement to sector position
+                    const fromWorld = gridToWorld(this.moveStartGrid.x, this.moveStartGrid.y);
+                    const toWorld = gridToWorld(this.moveTargetGrid.x, this.moveTargetGrid.y);
+                    
+                    this.x = fromWorld.x + (toWorld.x - fromWorld.x) * progress;
+                    this.y = fromWorld.y + (toWorld.y - fromWorld.y) * progress;
+                    
+                    // Update grid position when crossing boundaries
+                    if (progress > 0.5) {
+                        this.gridX = this.moveTargetGrid.x;
+                        this.gridY = this.moveTargetGrid.y;
+                    } else {
+                        this.gridX = this.moveStartGrid.x;
+                        this.gridY = this.moveStartGrid.y;
+                    }
+                }
+                
+                // Check for enemies in sector and auto-fire
+                if (this.isWatching) {
+                    this.checkSectorForEnemies(game);
+                }
+                break;
         }
     }
 
@@ -374,16 +415,67 @@ class Unit {
                 }
                 this.isMoving = false;
                 break;
-            case 'attack':
-                const target = game.getUnitById(command.data.targetId);
-                if (target && this.canAttack(target)) {
-                    target.takeDamage(this.damage);
-                }
+            case 'watchSector':
+                // Finish moving to sector position and stop watching
+                this.gridX = this.moveTargetGrid.x;
+                this.gridY = this.moveTargetGrid.y;
+                const worldPos = gridToWorld(this.gridX, this.gridY);
+                this.x = worldPos.x;
+                this.y = worldPos.y;
+                this.isMoving = false;
+                this.isWatching = false;
+                this.watchData = null;
                 break;
             case 'wait':
                 // Nothing to finish for wait
                 break;
         }
+    }
+
+    checkSectorForEnemies(game) {
+        if (!this.watchData) return;
+        
+        const enemies = game.units.filter(unit => 
+            unit.playerId !== this.playerId && 
+            unit.health > 0 &&
+            this.isInSector(unit) &&
+            this.canAttack(unit)
+        );
+        
+        // Auto-fire at the first enemy in sector
+        if (enemies.length > 0) {
+            const target = enemies[0];
+            target.takeDamage(this.damage);
+            
+            // Add shooting effect data for client
+            if (!game.shootingEffects) game.shootingEffects = [];
+            game.shootingEffects.push({
+                from: { x: this.x, y: this.y },
+                to: { x: target.x, y: target.y },
+                timestamp: Date.now()
+            });
+        }
+    }
+
+    isInSector(target) {
+        if (!this.watchData) return false;
+        
+        const sectorPos = { x: this.watchData.gridX, y: this.watchData.gridY };
+        const targetPos = { x: target.gridX, y: target.gridY };
+        
+        // Check if target is within range
+        const distance = getGridDistance(sectorPos, targetPos);
+        if (distance > this.shootRange) return false;
+        
+        // Check if target is within the cone angle
+        const dx = targetPos.x - sectorPos.x;
+        const dy = targetPos.y - sectorPos.y;
+        const targetAngle = Math.atan2(dy, dx);
+        
+        const angleDiff = Math.abs(targetAngle - this.watchData.direction);
+        const normalizedDiff = Math.min(angleDiff, 2 * Math.PI - angleDiff);
+        
+        return normalizedDiff <= this.watchData.angle / 2;
     }
 
     canAttack(target) {
@@ -417,6 +509,8 @@ class Unit {
         this.moveStartGrid = null;
         this.moveTargetGrid = null;
         this.moveProgress = 0;
+        this.isWatching = false;
+        this.watchData = null;
     }
 }
 
@@ -599,8 +693,12 @@ class Game {
             this.broadcastGameState({ 
                 executionTime: currentTime,
                 maxExecutionTime: GAME_CONFIG.TIMELINE_DURATION,
-                collisions
+                collisions,
+                shootingEffects: this.shootingEffects || []
             });
+            
+            // Clear shooting effects after broadcasting
+            this.shootingEffects = [];
         }, executionInterval);
     }
 
@@ -763,37 +861,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('planAttack', (data) => {
-        const playerId = players.get(socket.id);
-        const game = Array.from(games.values()).find(g => 
-            g.players.some(p => p.id === playerId)
-        );
-
-        if (game && game.phase === 'planning') {
-            const unit = game.getUnitById(data.unitId);
-            if (unit && unit.playerId === playerId) {
-                const success = unit.planAttack(data.targetId, game);
-                
-                if (success) {
-                    game.broadcastGameState();
-                } else {
-                    const target = game.getUnitById(data.targetId);
-                    if (!target || !unit.canAttack(target)) {
-                        socket.emit('commandError', {
-                            message: 'Target is out of range for attack',
-                            type: 'attack_out_of_range'
-                        });
-                    } else {
-                        socket.emit('commandError', { 
-                            message: 'Cannot add attack: Timeline limit exceeded',
-                            type: 'timeline_full'
-                        });
-                    }
-                }
-            }
-        }
-    });
-
     socket.on('planWait', (data) => {
         const playerId = players.get(socket.id);
         const game = Array.from(games.values()).find(g => 
@@ -810,6 +877,29 @@ io.on('connection', (socket) => {
                 } else {
                     socket.emit('commandError', { 
                         message: 'Cannot add wait: Timeline limit exceeded',
+                        type: 'timeline_full'
+                    });
+                }
+            }
+        }
+    });
+
+    socket.on('planWatchSector', (data) => {
+        const playerId = players.get(socket.id);
+        const game = Array.from(games.values()).find(g => 
+            g.players.some(p => p.id === playerId)
+        );
+
+        if (game && game.phase === 'planning') {
+            const unit = game.getUnitById(data.unitId);
+            if (unit && unit.playerId === playerId) {
+                const success = unit.planWatchSector(data.gridX, data.gridY, data.direction, data.angle, data.duration);
+                
+                if (success) {
+                    game.broadcastGameState();
+                } else {
+                    socket.emit('commandError', { 
+                        message: 'Cannot add watchSector: Timeline limit exceeded',
                         type: 'timeline_full'
                     });
                 }
