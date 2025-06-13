@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Strategy Game - Two Phase Combat</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: 'Arial', sans-serif;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            color: white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+        }
+
+        .game-container {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+
+        .game-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .header-left {
+            flex: 1;
+        }
+
+        .header-center {
+            flex: 2;
+            text-align: center;
+        }
+
+        .header-right {
+            flex: 1;
+            text-align: right;
+        }
+
+        .help-button {
+            padding: 8px 16px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.9em;
+            transition: background 0.2s ease;
+        }
+
+        .help-button:hover {
+            background: #45a049;
+        }
+
+        .game-status {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 5px;
+        }
+
+        .phase-indicator {
+            font-size: 1.2em;
+            font-weight: bold;
+            padding: 8px 16px;
+            border-radius: 20px;
+            background: #4CAF50;
+        }
+
+        .phase-indicator.planning {
+            background: #FF9800;
+        }
+
+        .phase-indicator.executing {
+            background: #F44336;
+        }
+
+        .timer {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #FFD700;
+        }
+
+        .player-info {
+            font-size: 1.1em;
+        }
+
+        #gameCanvas {
+            border: 3px solid #fff;
+            border-radius: 8px;
+            background: #2d5a27;
+            cursor: crosshair;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+        }
+
+        .controls {
+            margin-top: 15px;
+            text-align: center;
+        }
+
+        .waiting-message {
+            text-align: center;
+            font-size: 1.3em;
+            padding: 40px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+            margin: 20px 0;
+        }
+
+        .connection-status {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            padding: 8px 12px;
+            border-radius: 5px;
+            font-size: 0.9em;
+            font-weight: bold;
+        }
+
+        .connected {
+            background: #4CAF50;
+        }
+
+        .disconnected {
+            background: #F44336;
+        }
+
+        .ready-button {
+            padding: 12px 24px;
+            font-size: 1.1em;
+            font-weight: bold;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            min-width: 120px;
+        }
+
+        .ready-button.not-ready {
+            background: #4CAF50;
+            color: white;
+        }
+
+        .ready-button.not-ready:hover {
+            background: #45a049;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+
+        .ready-button.ready {
+            background: #FF9800;
+            color: white;
+        }
+
+        .ready-button.ready:hover {
+            background: #f57c00;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+
+        .ready-button:disabled {
+            background: #666;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        #readyStatus {
+            text-align: center;
+            padding: 8px;
+            border-radius: 5px;
+            background: rgba(0,0,0,0.1);
+            margin-bottom: 10px;
+        }
+
+        .player-ready {
+            color: #4CAF50;
+            font-weight: bold;
+        }
+
+        .player-not-ready {
+            color: #FF9800;
+        }
+
+        #timelineContainer {
+            background: rgba(0,0,0,0.4);
+            border-radius: 8px;
+            border: 2px solid #555;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        #timelineScale {
+            height: 25px;
+            background: linear-gradient(90deg, #2a2a2a 0%, #3a3a3a 100%);
+            border-radius: 5px;
+            position: relative;
+            margin-bottom: 5px;
+            border: 1px solid #666;
+        }
+
+        .timeline-tick {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 1px;
+            background: #666;
+        }
+
+        .timeline-tick.major {
+            background: #999;
+            width: 2px;
+        }
+
+        .timeline-tick-label {
+            position: absolute;
+            top: 2px;
+            font-size: 10px;
+            color: #ccc;
+            transform: translateX(-50%);
+        }
+
+        .timeline-unit-row {
+            display: flex;
+            align-items: center;
+            min-height: 40px;
+            border-bottom: 1px solid #444;
+            background: rgba(0,0,0,0.2);
+        }
+
+        .timeline-unit-row:hover {
+            background: rgba(255,255,255,0.05);
+        }
+
+        .timeline-unit-row.selected {
+            background: rgba(255,215,0,0.1);
+            border-left: 3px solid #FFD700;
+        }
+
+        .timeline-unit-info {
+            width: 120px;
+            padding: 5px 10px;
+            border-right: 1px solid #555;
+            flex-shrink: 0;
+        }
+
+        .timeline-unit-name {
+            font-size: 12px;
+            font-weight: bold;
+            color: white;
+        }
+
+        .timeline-unit-health {
+            font-size: 10px;
+            color: #aaa;
+        }
+
+        .timeline-track {
+            flex: 1;
+            height: 30px;
+            position: relative;
+            margin: 5px;
+            background: linear-gradient(90deg, #333 0%, #444 100%);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .timeline-command-block {
+            position: absolute;
+            height: 100%;
+            border-radius: 2px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 9px;
+            font-weight: bold;
+            color: white;
+            cursor: pointer;
+            border: 1px solid rgba(255,255,255,0.2);
+            transition: all 0.2s ease;
+            box-sizing: border-box;
+        }
+
+        .timeline-command-block:hover {
+            transform: scaleY(1.1);
+            z-index: 10;
+            border-color: #FFD700;
+            box-shadow: 0 2px 8px rgba(255,215,0,0.3);
+        }
+
+        .timeline-command-block.move {
+            background: linear-gradient(135deg, #4CAF50, #66BB6A);
+            border-left: 3px solid #2E7D32;
+        }
+
+        .timeline-command-block.attack {
+            background: linear-gradient(135deg, #F44336, #EF5350);
+            border-left: 3px solid #C62828;
+        }
+
+        .timeline-command-block.wait {
+            background: linear-gradient(135deg, #FF9800, #FFA726);
+            border-left: 3px solid #E65100;
+        }
+
+        .timeline-progress-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.3);
+            transition: width 0.1s ease;
+            pointer-events: none;
+        }
+
+        .timeline-overflow-warning {
+            background: rgba(255, 0, 0, 0.2);
+            border: 2px dashed #ff4444;
+        }
+
+        .command-button {
+            padding: 8px 12px;
+            margin: 2px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.9em;
+            background: #2196F3;
+            color: white;
+            transition: background 0.2s ease;
+        }
+
+        .command-button:hover:not(:disabled) {
+            background: #1976D2;
+        }
+
+        .command-button:disabled {
+            background: #666;
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+
+        .command-button.danger {
+            background: #F44336;
+        }
+
+        .command-button.danger:hover:not(:disabled) {
+            background: #D32F2F;
+        }
+
+        .timeline-info {
+            font-size: 0.9em;
+            color: #BBB;
+            margin-top: 10px;
+            padding: 8px;
+            background: rgba(0,0,0,0.2);
+            border-radius: 5px;
+        }
+
+        /* Help Modal Styles */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.7);
+        }
+
+        .modal-content {
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            margin: 5% auto;
+            padding: 30px;
+            border-radius: 10px;
+            width: 80%;
+            max-width: 800px;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+            color: white;
+        }
+
+        .close {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+            line-height: 1;
+        }
+
+        .close:hover,
+        .close:focus {
+            color: white;
+        }
+
+        .modal h3 {
+            color: #FFD700;
+            margin-top: 0;
+        }
+
+        .modal ul {
+            text-align: left;
+            margin: 10px 0;
+        }
+
+        .modal li {
+            margin-bottom: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="connection-status" id="connectionStatus">Connecting...</div>
+    
+    <div class="game-container">
+        <div class="game-header">
+            <div class="header-left"></div>
+            <div class="header-center">
+                <!-- Title removed as requested -->
+            </div>
+            <div class="header-right">
+                <button class="help-button" onclick="openHelpModal()">📋 How to Play</button>
+            </div>
+        </div>
+
+        <div id="gameArea" style="display: none;">
+            <div id="readyControls" style="text-align: center; margin-bottom: 15px;">
+                <div id="readyStatus" style="font-size: 0.9em; margin-bottom: 10px;"></div>
+                <button id="readyButton" class="ready-button">
+                    <span id="readyButtonText">Ready</span>
+                </button>
+            </div>
+
+            <div class="game-status">
+                <div class="phase-indicator" id="phaseIndicator">Waiting</div>
+                <div class="timer" id="timer">--:--</div>
+                <div class="player-info" id="playerInfo">Player: --</div>
+            </div>
+
+            <canvas id="gameCanvas" width="1200" height="700"></canvas>
+
+            <div class="controls">
+                <div id="selectedUnit" style="margin-bottom: 10px; font-weight: bold;"></div>
+                
+                <div id="timelineControls" style="margin: 15px 0;">
+                    <div id="timelineHeader">
+                        <h4 style="margin: 0 0 10px 0; color: #FFD700;">Command Timeline</h4>
+                        <div id="timelineScale"></div>
+                    </div>
+                    <div id="timelineContainer">
+                        <div id="timelineUnits"></div>
+                    </div>
+                    <div id="commandButtons" style="margin-top: 10px;">
+                        <button id="waitButton" class="command-button">Add Wait (1s)</button>
+                        <button id="clearCommandsButton" class="command-button danger">Clear All</button>
+                    </div>
+                    <div id="timelineInfo" class="timeline-info"></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="usernameArea">
+            <div class="waiting-message">
+                <h2>🎮 Enter Your Name</h2>
+                <div style="margin: 20px 0;">
+                    <input type="text" id="usernameInput" placeholder="Enter your username..." 
+                           style="padding: 12px; font-size: 1.1em; border: none; border-radius: 5px; width: 250px; text-align: center;">
+                </div>
+                <button id="joinGameButton" onclick="joinWithUsername()" 
+                        style="padding: 12px 24px; font-size: 1.1em; background: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer;">
+                    Join Game
+                </button>
+            </div>
+        </div>
+
+        <div id="waitingArea" style="display: none;">
+            <div class="waiting-message">
+                <h2 id="matchmakingTitle">🎮 Finding Players...</h2>
+                <div id="matchmakingStatus">
+                    <p>Waiting for players to join...</p>
+                    <div style="margin: 20px 0;">
+                        <div id="playersList"></div>
+                    </div>
+                    <div id="matchmakingTimer" style="font-size: 1.2em; color: #FFD700; margin-top: 15px;"></div>
+                </div>
+                <div style="margin-top: 20px;">
+                    <div style="display: inline-block; padding: 10px; background: rgba(255,255,255,0.1); border-radius: 5px;">
+                        <strong>Game URL:</strong> <span id="gameUrl"></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Help Modal -->
+    <div id="helpModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeHelpModal()">&times;</span>
+            <h3>📋 How to Play</h3>
+            <ul>
+                <li><strong>Planning Phase (60s):</strong> Click your units to select them, then click on empty grid cells to plan movement</li>
+                <li><strong>Timeline System:</strong> Commands are chained and take time - longer paths take more time to execute!</li>
+                <li><strong>Command Chain:</strong> Actions execute in order: Move (1s per cell) → Attack (2s) → Wait (1s)</li>
+                <li><strong>Timeline Management:</strong> Click timeline commands to remove them, add wait commands for timing</li>
+                <li><strong>Ready System:</strong> Click "Ready" when you're done planning - execution starts when both players are ready!</li>
+                <li><strong>Pathfinding:</strong> Units automatically find the best path around obstacles (brown blocks)</li>
+                <li><strong>Attack Orders:</strong> Select a unit, then right-click on visible enemy units to plan attacks</li>
+                <li><strong>Vision System:</strong> You can only see enemies within your units' vision range (4 cells)</li>
+                <li><strong>Team Vision:</strong> If any of your units sees an enemy, your whole team can see it</li>
+                <li><strong>Fog of War:</strong> Enemy plans are hidden during planning phase</li>
+                <li><strong>Execution Phase (10s):</strong> Watch as all planned commands execute over time</li>
+                <li><strong>Victory:</strong> Eliminate all enemy units to win!</li>
+            </ul>
+            <p><strong>Controls:</strong> Left-click to select/move units | Right-click to attack visible enemies | Timeline commands to manage timing</p>
+            <p><strong>Timeline Colors:</strong> 🟢 Move commands | 🔴 Attack commands | 🟠 Wait commands | Numbers show execution order</p>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="game.js"></script>
+    
+    <script>
+        // Use the gameClient variable from game.js, don't redeclare it
+        let username = '';
+
+        // Define functions in global scope so they're available for onclick
+        window.joinWithUsername = function() {
+            const usernameInput = document.getElementById('usernameInput');
+            username = usernameInput.value.trim();
+            
+            if (!username) {
+                alert('Please enter a username!');
+                return;
+            }
+            
+            if (username.length > 20) {
+                alert('Username must be 20 characters or less!');
+                return;
+            }
+            
+            // Hide username area, show waiting area
+            document.getElementById('usernameArea').style.display = 'none';
+            document.getElementById('waitingArea').style.display = 'block';
+            
+            // Initialize game client with username
+            gameClient = new GameClient(username);
+        };
+
+        window.openHelpModal = function() {
+            document.getElementById('helpModal').style.display = 'block';
+        };
+
+        window.closeHelpModal = function() {
+            document.getElementById('helpModal').style.display = 'none';
+        };
+
+        // Close modal when clicking outside of it
+        window.onclick = function(event) {
+            const modal = document.getElementById('helpModal');
+            if (event.target == modal) {
+                modal.style.display = 'none';
+            }
+        };
+
+        // Allow Enter key to join game
+        document.addEventListener('DOMContentLoaded', function() {
+            const usernameInput = document.getElementById('usernameInput');
+            if (usernameInput) {
+                usernameInput.addEventListener('keypress', function(e) {
+                    if (e.key === 'Enter') {
+                        window.joinWithUsername();
+                    }
+                });
+                
+                // Focus on username input
+                usernameInput.focus();
+            }
+        });
+    </script>
+</body>
+</html> 

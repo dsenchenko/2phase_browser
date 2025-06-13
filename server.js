@@ -411,7 +411,7 @@ class Unit {
             );
             
             if (nextCommand) {
-                console.log(`Unit ${this.id.substring(0, 8)} starting command: ${nextCommand.type} at time ${currentTime}`);
+                console.log(`Unit ${this.id.substring(0, 8)} starting command: ${nextCommand.type} at time ${currentTime.toFixed(2)}s`);
                 this.currentCommand = nextCommand;
                 this.commandStartTime = currentTime;
                 this.startCommand(nextCommand, game);
@@ -420,14 +420,16 @@ class Unit {
         
         // Update current command
         if (this.currentCommand) {
-            const commandProgress = (currentTime - this.commandStartTime) / this.currentCommand.duration;
+            const commandElapsed = currentTime - this.commandStartTime;
+            const commandProgress = Math.min(commandElapsed / this.currentCommand.duration, 1.0);
             
             if (commandProgress >= 1.0) {
                 // Command finished
-                console.log(`Unit ${this.id.substring(0, 8)} finishing command: ${this.currentCommand.type}`);
+                console.log(`Unit ${this.id.substring(0, 8)} finishing command: ${this.currentCommand.type} after ${commandElapsed.toFixed(2)}s`);
                 this.finishCommand(this.currentCommand, game);
                 this.currentCommand.executed = true;
                 this.currentCommand = null;
+                this.commandStartTime = null;
             } else {
                 // Command in progress
                 this.updateCommand(this.currentCommand, commandProgress, game, deltaTime);
@@ -440,21 +442,17 @@ class Unit {
             case 'move':
                 if (command.data.path && command.data.path.length > 1) {
                     this.isMoving = true;
-                    // Start from current actual position (which should be where previous command ended)
-                    this.moveStartGrid = { x: this.gridX, y: this.gridY };
-                    this.moveTargetGrid = command.data.path[command.data.path.length - 1];
                     this.moveProgress = 0;
                     
-                    // If the path starts from a different position than current, 
-                    // we need to adjust the path or current position
-                    if (command.data.path[0].x !== this.gridX || command.data.path[0].y !== this.gridY) {
-                        // Update current position to match path start
-                        this.gridX = command.data.path[0].x;
-                        this.gridY = command.data.path[0].y;
-                        const worldPos = gridToWorld(this.gridX, this.gridY);
-                        this.x = worldPos.x;
-                        this.y = worldPos.y;
-                        this.moveStartGrid = { x: this.gridX, y: this.gridY };
+                    console.log(`Unit ${this.id.substring(0, 8)} starting move from (${this.gridX}, ${this.gridY}) to path:`, 
+                        command.data.path.map(p => `(${p.x}, ${p.y})`).join(' -> '));
+                    
+                    // Ensure the unit starts from the correct position
+                    // The path should already be calculated from the unit's current position
+                    const pathStart = command.data.path[0];
+                    if (pathStart.x !== this.gridX || pathStart.y !== this.gridY) {
+                        console.log(`Warning: Path starts from (${pathStart.x}, ${pathStart.y}) but unit is at (${this.gridX}, ${this.gridY})`);
+                        // Don't force position change - trust the current position
                     }
                 }
                 break;
@@ -476,36 +474,40 @@ class Unit {
     updateCommand(command, progress, game, deltaTime) {
         switch (command.type) {
             case 'move':
-                if (this.isMoving && command.data.path) {
-                    // Smooth movement along path
-                    const totalSteps = command.data.path.length - 1;
-                    const currentStep = Math.floor(progress * totalSteps);
-                    const stepProgress = (progress * totalSteps) - currentStep;
+                if (this.isMoving && command.data.path && command.data.path.length > 1) {
+                    // Smooth movement along entire path based on overall progress
+                    const totalDistance = command.data.path.length - 1;
+                    const currentDistance = progress * totalDistance;
+                    const currentStep = Math.floor(currentDistance);
+                    const stepProgress = currentDistance - currentStep;
                     
-                    if (currentStep < command.data.path.length - 1) {
-                        const from = command.data.path[currentStep];
-                        const to = command.data.path[currentStep + 1];
-                        
+                    // Ensure we don't go beyond the path
+                    const fromIndex = Math.min(currentStep, command.data.path.length - 1);
+                    const toIndex = Math.min(currentStep + 1, command.data.path.length - 1);
+                    
+                    const from = command.data.path[fromIndex];
+                    const to = command.data.path[toIndex];
+                    
+                    if (from && to && from.x !== undefined && from.y !== undefined && 
+                        to.x !== undefined && to.y !== undefined) {
                         const fromWorld = gridToWorld(from.x, from.y);
                         const toWorld = gridToWorld(to.x, to.y);
                         
+                        // Smooth interpolation between current step positions
                         this.x = fromWorld.x + (toWorld.x - fromWorld.x) * stepProgress;
                         this.y = fromWorld.y + (toWorld.y - fromWorld.y) * stepProgress;
                         
-                        // Update grid position when crossing cell boundaries
-                        if (stepProgress > 0.5) {
-                            this.gridX = to.x;
-                            this.gridY = to.y;
-                        } else {
-                            this.gridX = from.x;
-                            this.gridY = from.y;
-                        }
+                        // Update grid position to the closest grid cell
+                        const currentWorldPos = { x: this.x, y: this.y };
+                        const gridPos = worldToGrid(currentWorldPos.x, currentWorldPos.y);
+                        this.gridX = gridPos.x;
+                        this.gridY = gridPos.y;
                     }
                 }
                 break;
             case 'watchSector':
                 // Move to sector position and watch
-                if (this.isMoving) {
+                if (this.isMoving && this.moveStartGrid && this.moveTargetGrid) {
                     // Smooth movement to sector position
                     const fromWorld = gridToWorld(this.moveStartGrid.x, this.moveStartGrid.y);
                     const toWorld = gridToWorld(this.moveTargetGrid.x, this.moveTargetGrid.y);
@@ -536,21 +538,28 @@ class Unit {
             case 'move':
                 if (command.data.path && command.data.path.length > 0) {
                     const finalPos = command.data.path[command.data.path.length - 1];
-                    this.gridX = finalPos.x;
-                    this.gridY = finalPos.y;
+                    if (finalPos && finalPos.x !== undefined && finalPos.y !== undefined) {
+                        this.gridX = finalPos.x;
+                        this.gridY = finalPos.y;
+                        const worldPos = gridToWorld(this.gridX, this.gridY);
+                        this.x = worldPos.x;
+                        this.y = worldPos.y;
+                        
+                        console.log(`Unit ${this.id.substring(0, 8)} finished move at (${this.gridX}, ${this.gridY})`);
+                    }
+                }
+                this.isMoving = false;
+                this.moveProgress = 0;
+                break;
+            case 'watchSector':
+                // Finish moving to sector position and stop watching
+                if (this.moveTargetGrid && this.moveTargetGrid.x !== undefined && this.moveTargetGrid.y !== undefined) {
+                    this.gridX = this.moveTargetGrid.x;
+                    this.gridY = this.moveTargetGrid.y;
                     const worldPos = gridToWorld(this.gridX, this.gridY);
                     this.x = worldPos.x;
                     this.y = worldPos.y;
                 }
-                this.isMoving = false;
-                break;
-            case 'watchSector':
-                // Finish moving to sector position and stop watching
-                this.gridX = this.moveTargetGrid.x;
-                this.gridY = this.moveTargetGrid.y;
-                const worldPos = gridToWorld(this.gridX, this.gridY);
-                this.x = worldPos.x;
-                this.y = worldPos.y;
                 this.isMoving = false;
                 this.isWatching = false;
                 this.watchData = null;
@@ -797,7 +806,7 @@ class Game {
         this.planningTimer = setInterval(() => {
             this.planningTimeLeft -= 1000;
             
-            if (this.planningTimeLeft <= 0) {
+            if (this.planningTimeLeft <= 0 && this.phase === 'planning') {
                 this.startExecutionPhase();
             }
         }, 1000);
@@ -821,6 +830,12 @@ class Game {
     }
 
     startExecutionPhase() {
+        // Prevent multiple execution phases from running
+        if (this.phase === 'executing' || this.executionTimer) {
+            console.log('Execution phase already running, ignoring duplicate start request');
+            return;
+        }
+
         if (this.planningTimer) {
             clearInterval(this.planningTimer);
             this.planningTimer = null;
@@ -829,16 +844,23 @@ class Game {
         this.phase = 'executing';
         this.executionStartTime = Date.now();
         
+        console.log('Starting execution phase, duration:', GAME_CONFIG.TIMELINE_DURATION, 'seconds');
+        
         // Execute timeline-based commands
         const executionDuration = GAME_CONFIG.TIMELINE_DURATION * 1000; // Convert to milliseconds
         const executionInterval = 50; // 20 FPS
-        let lastTime = 0;
+        let lastElapsed = 0;
 
         this.executionTimer = setInterval(() => {
             const elapsed = Date.now() - this.executionStartTime;
             const currentTime = elapsed / 1000; // Convert to seconds
-            const deltaTime = (elapsed - lastTime) / 1000;
-            lastTime = elapsed;
+            const deltaTime = (elapsed - lastElapsed) / 1000;
+            lastElapsed = elapsed;
+
+            // Log every second instead of every 50ms to reduce spam
+            if (Math.floor(currentTime) !== Math.floor(currentTime - deltaTime)) {
+                console.log(`Execution time: ${currentTime.toFixed(2)}s / ${GAME_CONFIG.TIMELINE_DURATION}s`);
+            }
 
             this.units.forEach(unit => {
                 if (unit.health > 0) {
@@ -849,9 +871,42 @@ class Game {
             // Remove dead units
             this.units = this.units.filter(unit => unit.health > 0);
             
+            // Check if execution phase should end
             if (elapsed >= executionDuration) {
+                console.log('Execution phase ending - time limit reached');
                 clearInterval(this.executionTimer);
                 this.executionTimer = null;
+                
+                // Ensure phase is set to something other than executing to prevent restart
+                this.phase = 'transitioning';
+                
+                // Reset all units to their final positions and clear execution state
+                this.units.forEach(unit => {
+                    // Finish any current command
+                    if (unit.currentCommand) {
+                        console.log(`Force finishing command ${unit.currentCommand.type} for unit ${unit.id.substring(0, 8)} at execution end`);
+                        unit.finishCommand(unit.currentCommand, this);
+                        unit.currentCommand.executed = true;
+                    }
+                    
+                    // Clear execution state
+                    unit.currentCommand = null;
+                    unit.commandStartTime = null;
+                    unit.isMoving = false;
+                    unit.isWatching = false;
+                    unit.watchData = null;
+                    unit.moveProgress = 0;
+                    
+                    // Mark all remaining commands as executed to prevent issues in next round
+                    if (unit.commandChain) {
+                        unit.commandChain.forEach(cmd => {
+                            if (!cmd.executed) {
+                                console.log(`Marking unfinished command ${cmd.type} as executed for unit ${unit.id.substring(0, 8)}`);
+                                cmd.executed = true;
+                            }
+                        });
+                    }
+                });
                 
                 // Check win condition
                 if (this.checkWinCondition()) {
@@ -859,10 +914,10 @@ class Game {
                 } else {
                     this.startPlanningPhase();
                 }
+                return;
             }
 
-            // In startExecutionPhase execution loop, after updating all units, check for collisions
-            // Build a map of grid positions to units
+            // Check for collisions
             const positionMap = new Map();
             this.units.forEach(unit => {
                 if (unit.health > 0) {
@@ -871,7 +926,7 @@ class Game {
                     positionMap.get(key).push(unit);
                 }
             });
-            // For each cell with more than one unit, deal collision damage
+            
             const collisions = [];
             positionMap.forEach(unitsInCell => {
                 if (unitsInCell.length > 1) {
@@ -882,7 +937,8 @@ class Game {
                     });
                 }
             });
-            // Pass collisions to broadcastGameState
+            
+            // Broadcast game state with execution progress
             this.broadcastGameState({ 
                 executionTime: currentTime,
                 maxExecutionTime: GAME_CONFIG.TIMELINE_DURATION,
