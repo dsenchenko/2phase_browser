@@ -225,8 +225,13 @@ class GameClient {
             const isObstacle = this.gameState.obstacles && 
                 this.gameState.obstacles.some(obs => obs.gridX === gridX && obs.gridY === gridY);
             
-            if (!isObstacle) {
+            // Check if target position is on the unit's planned route
+            const isOnRoute = this.isPositionOnPlannedRoute(gridX, gridY);
+            
+            if (!isObstacle && isOnRoute) {
                 this.startVisualSectorSelection(gridX, gridY, x, y);
+            } else if (!isOnRoute) {
+                this.showCommandError('Watch sector can only be placed on planned movement route');
             }
         }
     }
@@ -240,6 +245,26 @@ class GameClient {
             const distance = Math.sqrt(dx * dx + dy * dy);
             return distance <= 15; // Unit click radius
         });
+    }
+
+    isPositionOnPlannedRoute(gridX, gridY) {
+        if (!this.selectedUnit || !this.selectedUnit.commandChain) return false;
+        
+        const positions = new Set();
+        
+        // Add starting position
+        positions.add(`${this.selectedUnit.gridX},${this.selectedUnit.gridY}`);
+        
+        // Go through all movement commands and add their path positions
+        this.selectedUnit.commandChain.forEach(command => {
+            if (command.type === 'move' && command.data.path && command.data.path.length > 0) {
+                command.data.path.forEach(pathPos => {
+                    positions.add(`${pathPos.x},${pathPos.y}`);
+                });
+            }
+        });
+        
+        return positions.has(`${gridX},${gridY}`);
     }
 
     selectUnit(unit) {
@@ -289,8 +314,9 @@ class GameClient {
 
         // Update player info
         const playerInfo = document.getElementById('playerInfo');
-        const playerIndex = this.gameState.players.findIndex(p => p.id === this.playerId);
-        playerInfo.textContent = `Player ${playerIndex + 1}`;
+        const currentPlayer = this.gameState.players.find(p => p.id === this.playerId);
+        const displayName = currentPlayer ? (currentPlayer.username || 'Anonymous') : 'Unknown';
+        playerInfo.textContent = displayName;
         playerInfo.style.color = this.playerColor;
 
         // Update ready controls
@@ -320,17 +346,22 @@ class GameClient {
             // Update current player's ready state
             const currentPlayer = this.gameState.players.find(p => p.id === this.playerId);
             this.isReady = currentPlayer ? currentPlayer.planningReady : false;
+            const isEliminated = currentPlayer ? currentPlayer.eliminated : false;
             
             // Update button appearance
-            if (this.isReady) {
+            if (isEliminated) {
+                readyButton.className = 'ready-button eliminated';
+                readyButtonText.textContent = 'Eliminated';
+                readyButton.disabled = true;
+            } else if (this.isReady) {
                 readyButton.className = 'ready-button ready';
                 readyButtonText.textContent = 'Cancel Ready';
+                readyButton.disabled = false;
             } else {
                 readyButton.className = 'ready-button not-ready';
                 readyButtonText.textContent = 'Ready';
+                readyButton.disabled = false;
             }
-            
-            readyButton.disabled = false;
             
             // Update ready status display
             const readyPlayers = this.gameState.players.filter(p => p.planningReady);
@@ -346,9 +377,19 @@ class GameClient {
             
             // Show individual player status
             const playerStatuses = this.gameState.players.map((player, index) => {
-                const status = player.planningReady ? '✓' : '⏳';
-                const className = player.planningReady ? 'player-ready' : 'player-not-ready';
-                return `<span class="${className}">Player ${index + 1}: ${status}</span>`;
+                let status, className, displayName;
+                
+                if (player.eliminated) {
+                    status = '✗ destroyed';
+                    className = 'player-eliminated';
+                    displayName = player.username || `Player ${index + 1}`;
+                } else {
+                    status = player.planningReady ? '✓' : '⏳';
+                    className = player.planningReady ? 'player-ready' : 'player-not-ready';
+                    displayName = player.username || `Player ${index + 1}`;
+                }
+                
+                return `<span class="${className}">${displayName}: ${status}</span>`;
             }).join(' | ');
             
             readyStatus.innerHTML = `${statusText}<br/>${playerStatuses}`;
@@ -622,6 +663,32 @@ class GameClient {
                 this.ctx.fillStyle = '#654321';
                 this.ctx.fillRect(x + 2, y + 2, gridSize - 4, gridSize - 4);
                 this.ctx.fillStyle = '#8B4513';
+            });
+        }
+
+        // Highlight valid sector positions for selected unit
+        if (this.selectedUnit && this.gameState && this.gameState.phase === 'planning') {
+            const positions = new Set();
+            
+            // Add starting position
+            positions.add(`${this.selectedUnit.gridX},${this.selectedUnit.gridY}`);
+            
+            // Go through all movement commands and add their path positions
+            this.selectedUnit.commandChain.forEach(command => {
+                if (command.type === 'move' && command.data.path && command.data.path.length > 0) {
+                    command.data.path.forEach(pathPos => {
+                        positions.add(`${pathPos.x},${pathPos.y}`);
+                    });
+                }
+            });
+            
+            // Draw valid positions with subtle highlight
+            this.ctx.fillStyle = 'rgba(255, 255, 0, 0.2)';
+            positions.forEach(posKey => {
+                const [gridX, gridY] = posKey.split(',').map(Number);
+                const x = gridX * gridSize;
+                const y = gridY * gridSize;
+                this.ctx.fillRect(x, y, gridSize, gridSize);
             });
         }
     }

@@ -407,6 +407,28 @@ class Unit {
         return { x: this.gridX, y: this.gridY };
     }
 
+    getAllPlannedPositions() {
+        const positions = new Set();
+        let currentPos = { x: this.gridX, y: this.gridY };
+        
+        // Add starting position
+        positions.add(`${currentPos.x},${currentPos.y}`);
+        
+        // Go through all movement commands and add their path positions
+        this.commandChain.forEach(command => {
+            if (command.type === 'move' && command.data.path && command.data.path.length > 0) {
+                command.data.path.forEach(pathPos => {
+                    positions.add(`${pathPos.x},${pathPos.y}`);
+                });
+                // Update current position to end of this path
+                const lastPos = command.data.path[command.data.path.length - 1];
+                currentPos = { x: lastPos.x, y: lastPos.y };
+            }
+        });
+        
+        return positions;
+    }
+
     planMove(targetGridX, targetGridY, obstacles, game) {
         // Add other units' positions as obstacles
         const occupied = new Set([...obstacles]);
@@ -432,6 +454,16 @@ class Unit {
 
     planWatchSector(gridX, gridY, direction, angle, duration) {
         console.log(`Planning watchSector: gridX=${gridX}, gridY=${gridY}, direction=${direction}, duration=${duration}`);
+        
+        // Validate that the sector position is along the unit's planned route
+        const plannedPositions = this.getAllPlannedPositions();
+        const targetKey = `${gridX},${gridY}`;
+        
+        if (!plannedPositions.has(targetKey)) {
+            console.log(`WatchSector rejected: position (${gridX}, ${gridY}) is not on planned route`);
+            return 'invalid_position'; // Position not on planned route
+        }
+        
         const command = this.addCommand('watchSector', { 
             gridX, 
             gridY, 
@@ -440,7 +472,7 @@ class Unit {
             duration   // how long to watch
         });
         console.log(`WatchSector command added: ${command !== null}, total commands: ${this.commandChain.length}`);
-        return command !== null;
+        return command !== null ? true : 'timeline_full';
     }
 
     updateExecution(game, currentTime, deltaTime) {
@@ -497,13 +529,13 @@ class Unit {
                 }
                 break;
             case 'watchSector':
-                // Start watching the sector - move to sector position
+                // Start watching the sector from current position (no movement)
                 this.isWatching = true;
-                this.watchData = command.data;
-                this.isMoving = true;
-                this.moveStartGrid = { x: this.gridX, y: this.gridY };
-                this.moveTargetGrid = { x: command.data.gridX, y: command.data.gridY };
-                this.moveProgress = 0;
+                this.watchData = {
+                    ...command.data,
+                    gridX: this.gridX, // Watch from current position
+                    gridY: this.gridY  // Watch from current position
+                };
                 break;
             case 'wait':
                 // Nothing to start for wait
@@ -546,26 +578,7 @@ class Unit {
                 }
                 break;
             case 'watchSector':
-                // Move to sector position and watch
-                if (this.isMoving && this.moveStartGrid && this.moveTargetGrid) {
-                    // Smooth movement to sector position
-                    const fromWorld = gridToWorld(this.moveStartGrid.x, this.moveStartGrid.y);
-                    const toWorld = gridToWorld(this.moveTargetGrid.x, this.moveTargetGrid.y);
-                    
-                    this.x = fromWorld.x + (toWorld.x - fromWorld.x) * progress;
-                    this.y = fromWorld.y + (toWorld.y - fromWorld.y) * progress;
-                    
-                    // Update grid position when crossing boundaries
-                    if (progress > 0.5) {
-                        this.gridX = this.moveTargetGrid.x;
-                        this.gridY = this.moveTargetGrid.y;
-                    } else {
-                        this.gridX = this.moveStartGrid.x;
-                        this.gridY = this.moveStartGrid.y;
-                    }
-                }
-                
-                // Check for enemies in sector and auto-fire
+                // Watch sector from current position (no movement)
                 if (this.isWatching) {
                     this.checkSectorForEnemies(game);
                 }
@@ -592,15 +605,7 @@ class Unit {
                 this.moveProgress = 0;
                 break;
             case 'watchSector':
-                // Finish moving to sector position and stop watching
-                if (this.moveTargetGrid && this.moveTargetGrid.x !== undefined && this.moveTargetGrid.y !== undefined) {
-                    this.gridX = this.moveTargetGrid.x;
-                    this.gridY = this.moveTargetGrid.y;
-                    const worldPos = gridToWorld(this.gridX, this.gridY);
-                    this.x = worldPos.x;
-                    this.y = worldPos.y;
-                }
-                this.isMoving = false;
+                // Stop watching (unit stays at current position)
                 this.isWatching = false;
                 this.watchData = null;
                 break;
@@ -890,6 +895,9 @@ class Game {
         // Clear previous commands and reset ready states
         this.units.forEach(unit => unit.clearCommands());
         this.players.forEach(player => player.planningReady = false);
+        
+        // Check for eliminated players and mark them as eliminated and auto-ready
+        this.updateEliminatedPlayers();
 
         this.planningTimer = setInterval(() => {
             this.planningTimeLeft -= 1000;
@@ -910,6 +918,12 @@ class Game {
     setPlayerReady(playerId, ready) {
         const player = this.players.find(p => p.id === playerId);
         if (player) {
+            // Don't allow eliminated players to change their ready status
+            if (player.eliminated) {
+                console.log(`Eliminated player ${player.username} tried to change ready status - ignored`);
+                return;
+            }
+            
             player.planningReady = ready;
             
             // Check if all players are ready
@@ -1001,6 +1015,9 @@ class Game {
                     }
                 });
                 
+                // Update eliminated players before checking win condition
+                this.updateEliminatedPlayers();
+                
                 // Check win condition
                 if (this.checkWinCondition()) {
                     this.endGame();
@@ -1020,6 +1037,27 @@ class Game {
             // Clear shooting effects after broadcasting
             this.shootingEffects = [];
         }, executionInterval);
+    }
+
+    updateEliminatedPlayers() {
+        // Get players who still have living units
+        const playersWithUnits = new Set();
+        this.units.forEach(unit => {
+            if (unit.health > 0) {
+                playersWithUnits.add(unit.playerId);
+            }
+        });
+
+        // Mark players without units as eliminated and auto-ready
+        this.players.forEach(player => {
+            if (!playersWithUnits.has(player.id)) {
+                player.eliminated = true;
+                player.planningReady = true; // Auto-ready eliminated players
+                console.log(`Player ${player.username} (${player.id.substring(0, 8)}) has been eliminated and auto-readied`);
+            } else {
+                player.eliminated = false; // Reset elimination status for players with units
+            }
+        });
     }
 
     checkWinCondition() {
@@ -1193,11 +1231,16 @@ io.on('connection', (socket) => {
         if (game && game.phase === 'planning') {
             const unit = game.getUnitById(data.unitId);
             if (unit && unit.playerId === playerId) {
-                const success = unit.planWatchSector(data.gridX, data.gridY, data.direction, data.angle, data.duration);
+                const result = unit.planWatchSector(data.gridX, data.gridY, data.direction, data.angle, data.duration);
                 
-                if (success) {
+                if (result === true) {
                     game.broadcastGameState();
-                } else {
+                } else if (result === 'invalid_position') {
+                    socket.emit('commandError', { 
+                        message: 'Watch sector can only be placed on planned movement route',
+                        type: 'invalid_position'
+                    });
+                } else if (result === 'timeline_full') {
                     socket.emit('commandError', { 
                         message: 'Cannot add watchSector: Timeline limit exceeded',
                         type: 'timeline_full'
