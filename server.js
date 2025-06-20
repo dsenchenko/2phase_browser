@@ -26,8 +26,8 @@ const GAME_CONFIG = {
     UNIT_SIZE: 20,
     MIN_PLAYERS: 2,
     MAX_PLAYERS: 6, // Increased to support 6 players
-    MATCHMAKING_WAIT_TIME: 10000, // 10 seconds
-    VISION_RANGE: 8, // cells - doubled vision range
+    MATCHMAKING_WAIT_TIME: 30000, // 30 seconds
+    VISION_RANGE: 12, // cells - increased vision range
     TIMELINE_DURATION: 20, // seconds for execution phase
     TIME_PER_MOVE: 0.5, // seconds per grid cell movement - faster for larger map
     TIME_PER_ATTACK: 5, // seconds for attack action
@@ -51,6 +51,46 @@ function gridToWorld(gridX, gridY) {
 
 function getGridDistance(pos1, pos2) {
     return Math.abs(pos1.x - pos2.x) + Math.abs(pos1.y - pos2.y);
+}
+
+// Check if there's a clear line of sight between two points (no obstacles blocking)
+function hasLineOfSight(start, end, obstacles) {
+    // Use Bresenham's line algorithm to check each cell along the line
+    const dx = Math.abs(end.x - start.x);
+    const dy = Math.abs(end.y - start.y);
+    const sx = start.x < end.x ? 1 : -1;
+    const sy = start.y < end.y ? 1 : -1;
+    let err = dx - dy;
+    
+    let x = start.x;
+    let y = start.y;
+    
+    while (true) {
+        // Don't check the starting position
+        if (!(x === start.x && y === start.y)) {
+            // Check if current position is an obstacle
+            if (obstacles.has(`${x},${y}`)) {
+                return false; // Line of sight blocked
+            }
+        }
+        
+        // Reached the target
+        if (x === end.x && y === end.y) {
+            break;
+        }
+        
+        const e2 = 2 * err;
+        if (e2 > -dy) {
+            err -= dy;
+            x += sx;
+        }
+        if (e2 < dx) {
+            err += dx;
+            y += sy;
+        }
+    }
+    
+    return true; // Clear line of sight
 }
 
 // Simple A* pathfinding
@@ -577,7 +617,7 @@ class Unit {
             unit.playerId !== this.playerId && 
             unit.health > 0 &&
             this.isInSector(unit) &&
-            this.canAttack(unit)
+            this.canAttack(unit, game.obstacles)
         );
         
         // Auto-fire at the first enemy in sector
@@ -616,20 +656,40 @@ class Unit {
         return normalizedDiff <= this.watchData.angle / 2;
     }
 
-    canAttack(target) {
+    canAttack(target, obstacles) {
         const distance = getGridDistance(
             { x: this.gridX, y: this.gridY },
             { x: target.gridX, y: target.gridY }
         );
-        return distance <= this.shootRange && target.playerId !== this.playerId;
+        
+        if (distance > this.shootRange || target.playerId === this.playerId) {
+            return false;
+        }
+        
+        // Check line of sight - obstacles block shooting
+        return hasLineOfSight(
+            { x: this.gridX, y: this.gridY },
+            { x: target.gridX, y: target.gridY },
+            obstacles
+        );
     }
 
-    canSee(target) {
+    canSee(target, obstacles) {
         const distance = getGridDistance(
             { x: this.gridX, y: this.gridY },
             { x: target.gridX, y: target.gridY }
         );
-        return distance <= this.visionRange;
+        
+        if (distance > this.visionRange) {
+            return false;
+        }
+        
+        // Check line of sight - obstacles block vision
+        return hasLineOfSight(
+            { x: this.gridX, y: this.gridY },
+            { x: target.gridX, y: target.gridY },
+            obstacles
+        );
     }
 
     takeDamage(damage) {
@@ -817,8 +877,15 @@ class Game {
     }
 
     startPlanningPhase() {
+        // Prevent multiple planning phases from running
+        if (this.phase === 'planning' || this.planningTimer) {
+            console.log('Planning phase already running, ignoring duplicate start request');
+            return;
+        }
+
         this.phase = 'planning';
         this.planningTimeLeft = GAME_CONFIG.PLANNING_TIME;
+        console.log(`Starting planning phase with ${this.planningTimeLeft}ms (${Math.floor(this.planningTimeLeft / 1000)}s)`);
         
         // Clear previous commands and reset ready states
         this.units.forEach(unit => unit.clearCommands());
@@ -826,9 +893,14 @@ class Game {
 
         this.planningTimer = setInterval(() => {
             this.planningTimeLeft -= 1000;
+            console.log(`Planning time left: ${this.planningTimeLeft}ms (${Math.floor(this.planningTimeLeft / 1000)}s)`);
             
             if (this.planningTimeLeft <= 0 && this.phase === 'planning') {
+                console.log('Planning phase ending - time limit reached');
                 this.startExecutionPhase();
+            } else {
+                // Broadcast updated timer to all clients
+                this.broadcastGameState();
             }
         }, 1000);
 
@@ -938,32 +1010,10 @@ class Game {
                 return;
             }
 
-            // Check for collisions
-            const positionMap = new Map();
-            this.units.forEach(unit => {
-                if (unit.health > 0) {
-                    const key = `${unit.gridX},${unit.gridY}`;
-                    if (!positionMap.has(key)) positionMap.set(key, []);
-                    positionMap.get(key).push(unit);
-                }
-            });
-            
-            const collisions = [];
-            positionMap.forEach(unitsInCell => {
-                if (unitsInCell.length > 1) {
-                    unitsInCell.forEach(unit => {
-                        const collisionDamage = Math.floor(unit.maxHealth * 0.3);
-                        unit.takeDamage(collisionDamage);
-                        collisions.push({ unitId: unit.id, amount: collisionDamage });
-                    });
-                }
-            });
-            
             // Broadcast game state with execution progress
             this.broadcastGameState({ 
                 executionTime: currentTime,
                 maxExecutionTime: GAME_CONFIG.TIMELINE_DURATION,
-                collisions,
                 shootingEffects: this.shootingEffects || []
             });
             
@@ -1004,7 +1054,7 @@ class Game {
         this.units.forEach(enemyUnit => {
             if (enemyUnit.playerId !== playerId && enemyUnit.health > 0) {
                 for (const friendlyUnit of playerUnits) {
-                    if (friendlyUnit.canSee(enemyUnit)) {
+                    if (friendlyUnit.canSee(enemyUnit, this.obstacles)) {
                         visibleUnits.add(enemyUnit.id);
                         break;
                     }

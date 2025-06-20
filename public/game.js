@@ -99,21 +99,7 @@ class GameClient {
             if (gameState.phase === 'executing' && gameState.units) {
                 this.spawnAttackParticles(gameState);
             }
-            if (gameState.collisions && Array.isArray(gameState.collisions)) {
-                gameState.collisions.forEach(collision => {
-                    const unit = gameState.units.find(u => u.id === collision.unitId);
-                    if (unit) {
-                        this.damagePopups.push({
-                            x: unit.x,
-                            y: unit.y - 30,
-                            amount: collision.amount,
-                            alpha: 1,
-                            vy: -0.5,
-                            time: 0
-                        });
-                    }
-                });
-            }
+
             if (gameState.shootingEffects && Array.isArray(gameState.shootingEffects)) {
                 gameState.shootingEffects.forEach(effect => {
                     this.particles.push({
