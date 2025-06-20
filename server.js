@@ -20,16 +20,16 @@ let matchmakingTimer = null;
 // Game constants
 const GAME_CONFIG = {
     PLANNING_TIME: 60000, // 1 minute in milliseconds
-    MAP_WIDTH: 1200, // Updated for larger canvas
-    MAP_HEIGHT: 700,  // Updated for larger canvas
+    MAP_WIDTH: 1600, // Increased for larger map
+    MAP_HEIGHT: 1000,  // Increased for larger map
     GRID_SIZE: 40,
     UNIT_SIZE: 20,
     MIN_PLAYERS: 2,
-    MAX_PLAYERS: 4,
+    MAX_PLAYERS: 6, // Increased to support 6 players
     MATCHMAKING_WAIT_TIME: 10000, // 10 seconds
-    VISION_RANGE: 4, // cells
+    VISION_RANGE: 8, // cells - doubled vision range
     TIMELINE_DURATION: 20, // seconds for execution phase
-    TIME_PER_MOVE: 1, // seconds per grid cell movement
+    TIME_PER_MOVE: 0.5, // seconds per grid cell movement - faster for larger map
     TIME_PER_ATTACK: 5, // seconds for attack action
     TIME_WAIT: 1 // seconds for wait action
 };
@@ -715,8 +715,8 @@ class Game {
             return false;
         }
 
-        // Define colors for up to 4 players
-        const playerColors = ['#4CAF50', '#F44336', '#2196F3', '#FF9800']; // Green, Red, Blue, Orange
+        // Define colors for up to 6 players
+        const playerColors = ['#4CAF50', '#F44336', '#2196F3', '#FF9800', '#9C27B0', '#00BCD4']; // Green, Red, Blue, Orange, Purple, Cyan
 
         const player = {
             id: playerId,
@@ -746,10 +746,12 @@ class Game {
         const gridWidth = Math.ceil(GAME_CONFIG.MAP_WIDTH / GAME_CONFIG.GRID_SIZE);
         const gridHeight = Math.ceil(GAME_CONFIG.MAP_HEIGHT / GAME_CONFIG.GRID_SIZE);
         
-        // Define spawn positions for up to 4 players
+        // Define spawn positions for up to 6 players
         let spawnPositions;
         const centerY = Math.floor(gridHeight / 2);
         const centerX = Math.floor(gridWidth / 2);
+        const quarterX = Math.floor(gridWidth / 4);
+        const threeQuarterX = Math.floor(3 * gridWidth / 4);
         
         if (this.players.length <= 2) {
             // 2 players: left and right sides
@@ -764,13 +766,32 @@ class Game {
                 { x: gridWidth - 2, y: centerY },  // Player 2: right side
                 { x: centerX, y: 1 }               // Player 3: top side
             ];
-        } else {
+        } else if (this.players.length <= 4) {
             // 4 players: all four corners/sides
             spawnPositions = [
                 { x: 1, y: centerY },              // Player 1: left side
                 { x: gridWidth - 2, y: centerY },  // Player 2: right side
                 { x: centerX, y: 1 },              // Player 3: top side
                 { x: centerX, y: gridHeight - 2 }  // Player 4: bottom side
+            ];
+        } else if (this.players.length <= 5) {
+            // 5 players: four sides + one corner
+            spawnPositions = [
+                { x: 1, y: centerY },              // Player 1: left side
+                { x: gridWidth - 2, y: centerY },  // Player 2: right side
+                { x: centerX, y: 1 },              // Player 3: top side
+                { x: centerX, y: gridHeight - 2 }, // Player 4: bottom side
+                { x: 1, y: 1 }                     // Player 5: top-left corner
+            ];
+        } else {
+            // 6 players: four sides + two corners
+            spawnPositions = [
+                { x: 1, y: centerY },              // Player 1: left side
+                { x: gridWidth - 2, y: centerY },  // Player 2: right side
+                { x: centerX, y: 1 },              // Player 3: top side
+                { x: centerX, y: gridHeight - 2 }, // Player 4: bottom side
+                { x: 1, y: 1 },                    // Player 5: top-left corner
+                { x: gridWidth - 2, y: gridHeight - 2 } // Player 6: bottom-right corner
             ];
         }
 
